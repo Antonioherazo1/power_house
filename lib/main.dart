@@ -36,20 +36,37 @@ bool onIosBackground(ServiceInstance service) {
   return true;
 }
 
-/// Esta función se ejecuta en segundo plano.
-/// Se conecta al broker MQTT, suscribe al tópico, y por cada mensaje:
-///   - Calcula la potencia (en vatios) a partir del consumo (amperios).
-///   - Incrementa el totalizador de energía (kWh) usando: incremento = potencia/3600000 (suponiendo 1 segundo de muestreo).
-///   - Guarda el totalizador en SharedPreferences.
-///   - Envía a la UI los valores: consumo (A), potencia (W) y energía total (kWh).
+/// Esta función se ejecuta en segundo plano en Android.
+/// Se conecta al broker MQTT, suscribe al tópico y, por cada mensaje:
+///   - Calcula la potencia (W) a partir del consumo (A)
+///   - Incrementa el totalizador de energía (kWh) usando un muestreo de 1 segundo
+///   - Guarda el totalizador en SharedPreferences
+///   - Envía a la UI los valores: consumo, potencia y energía total
+/// Además, escucha el comando "reset" enviado desde la UI para reiniciar el totalizador.
 void onStart(ServiceInstance service) async {
-  // Configura la notificación en primer plano en Android.
   if (service is AndroidServiceInstance) {
     service.setForegroundNotificationInfo(
       title: "Servicio en Segundo Plano",
       content: "Monitor de energía activo",
     );
   }
+
+  // Declara la variable para llevar la energía total en el servicio.
+  double _serviceEnergyTotal = 0.0;
+  SharedPreferences prefs = await SharedPreferences.getInstance();
+  _serviceEnergyTotal = prefs.getDouble('energiaTotal') ?? 0.0;
+
+  // Escucha el comando "reset" enviado desde la UI.
+  service.on("reset").listen((data) async {
+    if (data != null && data.containsKey("reset")) {
+      double resetValue = (data["reset"] as num).toDouble();
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('energiaTotal', resetValue);
+      _serviceEnergyTotal = resetValue;
+    }
+  });
+
+  double voltaje = 220.0;
 
   // Configura el cliente MQTT.
   MqttServerClient client =
@@ -71,42 +88,34 @@ void onStart(ServiceInstance service) async {
     client.disconnect();
   }
 
-  // Suscríbete al tópico que envía los datos de consumo (en amperios)
+  // Suscríbete al tópico de consumo (en amperios)
   client.subscribe('consumo/amps_Total', MqttQos.atMostOnce);
 
-  // Recupera el totalizador almacenado
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  double energiaTotal = prefs.getDouble('energiaTotal') ?? 0.0;
-  double voltaje = 220.0;
-
-  // Escucha las actualizaciones de MQTT.
+  // Escucha las actualizaciones del MQTT.
   client.updates!.listen((List<MqttReceivedMessage<MqttMessage>> c) async {
     final MqttPublishMessage message = c[0].payload as MqttPublishMessage;
     final String payload =
         MqttPublishPayload.bytesToStringAsString(message.payload.message);
 
-    double nuevoConsumo = double.tryParse(payload) ?? 0; // en amperios
-    double nuevaPotencia = nuevoConsumo * voltaje; // en vatios
+    double nuevoConsumo = double.tryParse(payload) ?? 0; // en A
+    double nuevaPotencia = nuevoConsumo * voltaje; // en W
 
-    // Calcula el incremento en kWh para un intervalo de 1 segundo.
+    // Incremento en kWh para 1 segundo de muestreo.
     double incremento = nuevaPotencia / 3600000;
-    energiaTotal += incremento;
+    _serviceEnergyTotal += incremento;
+    await prefs.setDouble('energiaTotal', _serviceEnergyTotal);
 
-    // Guarda el totalizador actualizado.
-    await prefs.setDouble('energiaTotal', energiaTotal);
-
-    // Actualiza la notificación en Android.
     if (service is AndroidServiceInstance) {
       service.setForegroundNotificationInfo(
         title: "Servicio en Segundo Plano",
         content:
-            "Consumo: ${nuevoConsumo.toStringAsFixed(2)} A, Potencia: ${nuevaPotencia.toStringAsFixed(2)} W, Energía total: ${energiaTotal.toStringAsFixed(6)} kWh",
+            "Consumo: ${nuevoConsumo.toStringAsFixed(2)} A, Potencia: ${nuevaPotencia.toStringAsFixed(2)} W, Energía: ${_serviceEnergyTotal.toStringAsFixed(6)} kWh",
       );
     }
 
     // Envía la actualización a la UI.
     service.invoke("update", {
-      "energiaTotal": energiaTotal,
+      "energiaTotal": _serviceEnergyTotal,
       "consumo": nuevoConsumo,
       "potencia": nuevaPotencia,
     });
@@ -154,14 +163,12 @@ class _EnergyMonitorScreenState extends State<EnergyMonitorScreen> {
   @override
   void initState() {
     super.initState();
-    // Escucha las actualizaciones enviadas por el servicio en segundo plano.
     FlutterBackgroundService().on("update").listen((event) {
       if (event != null && event["energiaTotal"] != null) {
         setState(() {
-          energiaTotal = event["energiaTotal"] as double;
-          consumo = event["consumo"] as double;
-          potencia = event["potencia"] as double;
-          // Añade un punto a la gráfica (x: tiempo, y: consumo en A)
+          energiaTotal = (event["energiaTotal"] as num).toDouble();
+          consumo = (event["consumo"] as num).toDouble();
+          potencia = (event["potencia"] as num).toDouble();
           dataPoints.add(FlSpot(xValue, consumo));
           xValue += 1;
           if (dataPoints.length > 30) {
@@ -172,21 +179,22 @@ class _EnergyMonitorScreenState extends State<EnergyMonitorScreen> {
     });
   }
 
-  // Permite establecer manualmente un valor inicial para el totalizador.
+  /// Permite establecer un valor inicial para el totalizador.
+  /// Actualiza la pantalla, SharedPreferences y envía el comando al servicio en segundo plano.
   void setEnergiaInicial(double valor) async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('energiaTotal', valor);
     setState(() {
       energiaTotal = valor;
-      // Reiniciamos la gráfica o dejamos que siga acumulando según convenga.
       dataPoints = [];
       xValue = 0;
     });
-    await prefs.setDouble('energiaTotal', valor);
+    // Envía el comando de reinicio al servicio utilizando invoke.
+    FlutterBackgroundService().invoke("reset", {"reset": valor});
   }
 
   @override
   Widget build(BuildContext context) {
-    // Configuración básica de la gráfica con fl_chart.
     final lineChartData = LineChartData(
       lineBarsData: [
         LineChartBarData(
