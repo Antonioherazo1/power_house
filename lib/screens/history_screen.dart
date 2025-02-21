@@ -1,7 +1,8 @@
-// HistoryScreen.dart
+// lib/screens/history_screen.dart
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'db_helper.dart';
+import '../db/db_helper.dart';
+import '../models/energy_record.dart';
 
 class HistoryScreen extends StatefulWidget {
   final String viewType; // 'day' o 'hour'
@@ -33,7 +34,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
     List<FlSpot> spots = [];
     for (int i = 0; i < rec.length; i++) {
-      // Usamos el índice como eje X (o podrías usar (timestamp - startTimestamp) / 1000)
       spots.add(FlSpot(i.toDouble(), rec[i].consumption));
     }
     setState(() {

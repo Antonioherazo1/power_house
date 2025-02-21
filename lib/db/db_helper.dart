@@ -1,44 +1,9 @@
-// db_helper.dart
+// lib/db/db_helper.dart
 import 'dart:async';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
-
-class EnergyRecord {
-  final int? id;
-  final int timestamp; // se almacenará como Unix timestamp (milisegundos)
-  final double consumption;
-  final double power;
-  final double energyTotal;
-
-  EnergyRecord({
-    this.id,
-    required this.timestamp,
-    required this.consumption,
-    required this.power,
-    required this.energyTotal,
-  });
-
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'timestamp': timestamp,
-      'consumption': consumption,
-      'power': power,
-      'energyTotal': energyTotal,
-    };
-  }
-
-  factory EnergyRecord.fromMap(Map<String, dynamic> map) {
-    return EnergyRecord(
-      id: map['id'],
-      timestamp: map['timestamp'],
-      consumption: map['consumption'],
-      power: map['power'],
-      energyTotal: map['energyTotal'],
-    );
-  }
-}
+import '../models/energy_record.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._privateConstructor();
