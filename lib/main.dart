@@ -6,6 +6,8 @@ import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'db_helper.dart';
+import 'HistoryScreen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -119,6 +121,15 @@ void onStart(ServiceInstance service) async {
       "consumo": nuevoConsumo,
       "potencia": nuevaPotencia,
     });
+
+    int currentTimestamp = DateTime.now().millisecondsSinceEpoch;
+    EnergyRecord record = EnergyRecord(
+      timestamp: currentTimestamp,
+      consumption: nuevoConsumo,
+      power: nuevaPotencia,
+      energyTotal: _serviceEnergyTotal,
+    );
+    await DatabaseHelper.instance.insertEnergyRecord(record);
   });
 
   // Actualiza la notificación periódicamente (opcional)
@@ -223,9 +234,31 @@ class _EnergyMonitorScreenState extends State<EnergyMonitorScreen> {
     );
 
     return Scaffold(
+      // Dentro del Scaffold en EnergyMonitorScreen, por ejemplo:
       appBar: AppBar(
         title: Text("Monitor de Energía (Android)"),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.calendar_today),
+            onPressed: () {
+              Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => HistoryScreen(viewType: 'day')));
+            },
+          ),
+          IconButton(
+            icon: Icon(Icons.access_time),
+            onPressed: () {
+              Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => HistoryScreen(viewType: 'hour')));
+            },
+          ),
+        ],
       ),
+
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
