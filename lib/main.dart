@@ -9,8 +9,6 @@ void main() {
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -22,8 +20,6 @@ class MyApp extends StatelessWidget {
 }
 
 class EnergyMonitor extends StatefulWidget {
-  const EnergyMonitor({super.key});
-
   @override
   _EnergyMonitorState createState() => _EnergyMonitorState();
 }
@@ -31,7 +27,12 @@ class EnergyMonitor extends StatefulWidget {
 class _EnergyMonitorState extends State<EnergyMonitor> {
   late MqttServerClient client;
   String status = 'Desconectado';
-  String consumo = '0 W';
+  String consumo = '0 A';
+  String potencia = '0 W';
+  double voltaje = 220.0; // Voltaje actualizado a 220V
+  double energiaTotal = 0.0;
+  double consumoActual = 0.0;
+  double energiaInicial = 0.0;
   List<FlSpot> dataPoints = [];
   double xValue = 0;
   Timer? reconnectTimer;
@@ -90,15 +91,29 @@ class _EnergyMonitorState extends State<EnergyMonitor> {
       final String payload =
           MqttPublishPayload.bytesToStringAsString(message.payload.message);
 
-      double consumoActual = double.tryParse(payload) ?? 0;
+      double nuevoConsumo = double.tryParse(payload) ?? 0;
+      double nuevaPotencia = nuevoConsumo * voltaje;
+
       setState(() {
-        consumo = '$consumoActual A';
-        dataPoints.add(FlSpot(xValue, consumoActual));
+        consumoActual = nuevoConsumo;
+        potencia = '${nuevaPotencia.toStringAsFixed(2)} W';
+        consumo = '$nuevoConsumo A';
+        // Calcular el incremento de energía en kWh para un intervalo de 1 segundo
+        energiaTotal += nuevaPotencia / 3600000;
+        dataPoints.add(FlSpot(xValue, nuevoConsumo));
         xValue += 1;
         if (dataPoints.length > 30) {
           dataPoints.removeAt(0);
         }
       });
+    });
+  }
+
+  void setEnergiaInicial(double valor) {
+    setState(() {
+      energiaInicial = valor;
+      energiaTotal =
+          energiaInicial; // Reinicia el total con el valor inicial ingresado
     });
   }
 
@@ -116,8 +131,20 @@ class _EnergyMonitorState extends State<EnergyMonitor> {
                     color: status == 'Conectado' ? Colors.green : Colors.red)),
             SizedBox(height: 20),
             Text('Consumo: $consumo',
-                style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+            Text('Potencia: $potencia',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+            Text('Energía total: ${energiaTotal.toStringAsFixed(6)} kWh',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
             SizedBox(height: 20),
+            TextField(
+              decoration: InputDecoration(
+                  labelText: 'Establecer energía inicial (kWh)'),
+              keyboardType: TextInputType.number,
+              onSubmitted: (value) {
+                setEnergiaInicial(double.tryParse(value) ?? 0);
+              },
+            ),
             Expanded(
               child: LineChart(
                 LineChartData(
