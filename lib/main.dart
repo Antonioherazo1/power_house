@@ -1,179 +1,154 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
-import 'package:fl_chart/fl_chart.dart';
-import 'dart:async';
+import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initializeService();
   runApp(MyApp());
+}
+
+Future<void> initializeService() async {
+  final service = FlutterBackgroundService();
+
+  await service.configure(
+    androidConfiguration: AndroidConfiguration(
+      onStart: onStart,
+      autoStart: true,
+      isForegroundMode: true,
+    ),
+    iosConfiguration: IosConfiguration(
+      // Para iOS se deshabilita el autoStart (aunque no se usará)
+      autoStart: false,
+      onForeground: onStart,
+      onBackground: onIosBackground,
+    ),
+  );
+  service.startService();
+}
+
+// Función para iOS en segundo plano (no se usará en este ejemplo Android-only)
+bool onIosBackground(ServiceInstance service) {
+  return true;
+}
+
+void onStart(ServiceInstance service) async {
+  // Configura la notificación en primer plano en Android
+  if (service is AndroidServiceInstance) {
+    service.setForegroundNotificationInfo(
+      title: "Servicio en Segundo Plano",
+      content: "El monitor de energía sigue activo",
+    );
+  }
+
+  // Configura el cliente MQTT
+  MqttServerClient client =
+      MqttServerClient('thinc.site', 'flutter_background_client');
+  client.port = 1883;
+  client.keepAlivePeriod = 20;
+  client.logging(on: false);
+
+  final connMessage = MqttConnectMessage()
+      .withClientIdentifier('flutter_background_client')
+      .startClean()
+      .withWillQos(MqttQos.atMostOnce);
+  client.connectionMessage = connMessage;
+
+  try {
+    await client.connect();
+  } catch (e) {
+    print('Error en conexión MQTT: $e');
+    client.disconnect();
+  }
+
+  // Suscríbete al tópico deseado
+  client.subscribe('consumo/amps_Total', MqttQos.atMostOnce);
+
+  // Recupera el totalizador almacenado
+  SharedPreferences prefs = await SharedPreferences.getInstance();
+  double energiaTotal = prefs.getDouble('energiaTotal') ?? 0.0;
+  double voltaje = 220.0;
+
+  // Escucha las actualizaciones del MQTT
+  client.updates!.listen((List<MqttReceivedMessage<MqttMessage>> c) async {
+    final MqttPublishMessage message = c[0].payload as MqttPublishMessage;
+    final String payload =
+        MqttPublishPayload.bytesToStringAsString(message.payload.message);
+    double nuevoConsumo = double.tryParse(payload) ?? 0;
+    double nuevaPotencia = nuevoConsumo * voltaje;
+    // Calcula el incremento en kWh para un intervalo de 1 segundo
+    double incremento = nuevaPotencia / 3600000;
+    energiaTotal += incremento;
+    await prefs.setDouble('energiaTotal', energiaTotal);
+    // Actualiza la notificación
+    if (service is AndroidServiceInstance) {
+      service.setForegroundNotificationInfo(
+        title: "Servicio en Segundo Plano",
+        content: "Energía total: ${energiaTotal.toStringAsFixed(6)} kWh",
+      );
+    }
+    // Envía la actualización a la interfaz
+    service.invoke("update", {"energiaTotal": energiaTotal});
+  });
+
+  // Actualiza la notificación periódicamente (opcional)
+  Timer.periodic(Duration(seconds: 1), (timer) {
+    if (service is AndroidServiceInstance) {
+      service.setForegroundNotificationInfo(
+        title: "Servicio en Segundo Plano",
+        content: "Energía total: ${energiaTotal.toStringAsFixed(6)} kWh",
+      );
+    }
+  });
 }
 
 class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Monitor de Energía',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: EnergyMonitor(),
+      title: 'Monitor de Energía en Segundo Plano',
+      home: EnergyMonitorScreen(),
     );
   }
 }
 
-class EnergyMonitor extends StatefulWidget {
+class EnergyMonitorScreen extends StatefulWidget {
   @override
-  _EnergyMonitorState createState() => _EnergyMonitorState();
+  _EnergyMonitorScreenState createState() => _EnergyMonitorScreenState();
 }
 
-class _EnergyMonitorState extends State<EnergyMonitor> {
-  late MqttServerClient client;
-  String status = 'Desconectado';
-  String consumo = '0 A';
-  String potencia = '0 W';
-  double voltaje = 220.0; // Voltaje actualizado a 220V
+class _EnergyMonitorScreenState extends State<EnergyMonitorScreen> {
   double energiaTotal = 0.0;
-  double consumoActual = 0.0;
-  double energiaInicial = 0.0;
-  List<FlSpot> dataPoints = [];
-  double xValue = 0;
-  Timer? reconnectTimer;
 
   @override
   void initState() {
     super.initState();
-    connectToBroker();
-  }
-
-  Future<void> connectToBroker() async {
-    client = MqttServerClient('thinc.site', 'flutter_client');
-    client.port = 1883;
-    client.keepAlivePeriod = 20;
-    client.onDisconnected = onDisconnected;
-    client.onConnected = onConnected;
-    client.onSubscribed = onSubscribed;
-    client.logging(on: false);
-
-    final connMessage = MqttConnectMessage()
-        .withClientIdentifier('flutter_client')
-        .startClean()
-        .withWillQos(MqttQos.atMostOnce);
-
-    client.connectionMessage = connMessage;
-
-    try {
-      await client.connect();
-    } catch (e) {
-      print('Error al conectar: $e');
-      scheduleReconnect();
-    }
-  }
-
-  void scheduleReconnect() {
-    reconnectTimer?.cancel();
-    reconnectTimer = Timer(Duration(seconds: 10), connectToBroker);
-  }
-
-  void onDisconnected() {
-    setState(() => status = 'Desconectado');
-    print('Desconectado del broker');
-    scheduleReconnect();
-  }
-
-  void onConnected() {
-    setState(() => status = 'Conectado');
-    print('Conectado al broker');
-    client.subscribe('consumo/amps_Total', MqttQos.atMostOnce);
-  }
-
-  void onSubscribed(String topic) {
-    print('Suscrito a $topic');
-    client.updates!.listen((List<MqttReceivedMessage<MqttMessage>> c) {
-      final MqttPublishMessage message = c[0].payload as MqttPublishMessage;
-      final String payload =
-          MqttPublishPayload.bytesToStringAsString(message.payload.message);
-
-      double nuevoConsumo = double.tryParse(payload) ?? 0;
-      double nuevaPotencia = nuevoConsumo * voltaje;
-
-      setState(() {
-        consumoActual = nuevoConsumo;
-        potencia = '${nuevaPotencia.toStringAsFixed(2)} W';
-        consumo = '$nuevoConsumo A';
-        // Calcular el incremento de energía en kWh para un intervalo de 1 segundo
-        energiaTotal += nuevaPotencia / 3600000;
-        dataPoints.add(FlSpot(xValue, nuevoConsumo));
-        xValue += 1;
-        if (dataPoints.length > 30) {
-          dataPoints.removeAt(0);
-        }
-      });
-    });
-  }
-
-  void setEnergiaInicial(double valor) {
-    setState(() {
-      energiaInicial = valor;
-      energiaTotal =
-          energiaInicial; // Reinicia el total con el valor inicial ingresado
+    // Escucha las actualizaciones del servicio en segundo plano
+    FlutterBackgroundService().on("update").listen((event) {
+      if (event!["energiaTotal"] != null) {
+        setState(() {
+          energiaTotal = event["energiaTotal"];
+        });
+      }
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Monitor de Energía')),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            Text('Estado: $status',
-                style: TextStyle(
-                    fontSize: 20,
-                    color: status == 'Conectado' ? Colors.green : Colors.red)),
-            SizedBox(height: 20),
-            Text('Consumo: $consumo',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-            Text('Potencia: $potencia',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-            Text('Energía total: ${energiaTotal.toStringAsFixed(6)} kWh',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-            SizedBox(height: 20),
-            TextField(
-              decoration: InputDecoration(
-                  labelText: 'Establecer energía inicial (kWh)'),
-              keyboardType: TextInputType.number,
-              onSubmitted: (value) {
-                setEnergiaInicial(double.tryParse(value) ?? 0);
-              },
-            ),
-            Expanded(
-              child: LineChart(
-                LineChartData(
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: dataPoints,
-                      isCurved: true,
-                      color: Colors.blue,
-                      barWidth: 3,
-                    ),
-                  ],
-                  borderData: FlBorderData(show: true),
-                  minX: dataPoints.isNotEmpty ? dataPoints.first.x : 0,
-                  maxX: dataPoints.isNotEmpty ? dataPoints.last.x : 30,
-                  minY: 0,
-                  maxY: 30,
-                ),
-              ),
-            ),
-          ],
+      appBar: AppBar(
+        title: Text("Monitor de Energía (Android)"),
+      ),
+      body: Center(
+        child: Text(
+          "Energía Total: ${energiaTotal.toStringAsFixed(6)} kWh",
+          style: TextStyle(fontSize: 24),
         ),
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    reconnectTimer?.cancel();
-    client.disconnect();
-    super.dispose();
   }
 }
